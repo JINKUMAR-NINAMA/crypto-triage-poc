@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wallet Trace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['IBM Plex Mono', 'ui-monospace', 'monospace'],
+        },
+        colors: {
+          ink: '#1F1F1E',
+          line: '#E7E5E1',
+          canvas: '#FBFAF8',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  body { font-family: 'Inter', sans-serif; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  #cy { width: 100%; height: 100%; }
+
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid #D9D6D0;
+    border-top-color: #1F1F1E;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #DEDBD5; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body class="bg-white text-ink antialiased">
+
+  <!-- Header -->
+  <header class="border-b border-line">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-baseline gap-2">
+        <span class="text-[15px] font-semibold tracking-tight">Wallet Trace</span>
+        <span class="text-[13px] text-neutral-400">on-chain fund-flow &amp; risk mapping</span>
+      </div>
+      <div id="chain-badge" class="text-[12px] text-neutral-400 mono">Sepolia testnet</div>
+    </div>
+  </header>
+
+  <!-- Search -->
+  <section class="border-b border-line bg-canvas">
+    <div class="max-w-6xl mx-auto px-6 py-10">
+      <div class="max-w-sm mx-auto">
+
+        <div class="text-[13px] text-neutral-500 mb-5 text-center">
+          Case intake &mdash; recorded to the chain-of-custody ledger
+        </div>
+
+        <form id="trace-form" class="flex flex-col gap-3">
+          <div>
+            <label for="victim-name-input" class="block text-[11.5px] text-neutral-400 mb-1">Victim name</label>
+            <input
+              id="victim-name-input"
+              type="text"
+              placeholder="e.g. Ramesh Kumar"
+              class="w-full rounded-md border border-line bg-white px-3.5 py-2.5 text-[14px] placeholder:text-neutral-300 focus:outline-none focus:ring-2 focus:ring-neutral-800/10 focus:border-neutral-400"
+              autocomplete="off"
+            />
+          </div>
+
+          <div>
+            <label for="address-input" class="block text-[11.5px] text-neutral-400 mb-1">Victim wallet address (trace origin)</label>
+            <input
+              id="address-input"
+              type="text"
+              placeholder="0x8C1a9Ab9E8ae8C5f6cdDfAD0422FaF50cEB1eE50"
+              class="w-full rounded-md border border-line bg-white px-3.5 py-2.5 text-[14px] mono placeholder:text-neutral-300 focus:outline-none focus:ring-2 focus:ring-neutral-800/10 focus:border-neutral-400"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+
+          <button
+            type="submit"
+            id="trace-btn"
+            class="mt-1 rounded-md bg-neutral-900 text-white text-[14px] font-medium px-5 py-2.5 hover:bg-neutral-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            <span id="trace-btn-label">Trace</span>
+            <span id="trace-spinner" class="spinner hidden"></span>
+          </button>
+        </form>
+        <p id="status-line" class="text-center text-[12.5px] text-neutral-400 mt-3 min-h-[18px]"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main workspace -->
+  <main class="max-w-6xl mx-auto px-6 py-6">
+    <div id="workspace-grid" class="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-5">
+
+      <!-- Graph canvas -->
+      <div id="graph-panel" class="relative border border-line rounded-lg overflow-hidden" style="height: 560px;">
+        <div id="cy" class="bg-white"></div>
+
+        <!-- Empty state -->
+        <div id="empty-state" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-8">
+          <div class="w-10 h-10 rounded-full border border-line flex items-center justify-center text-neutral-300 text-lg">→</div>
+          <p class="text-[13.5px] text-neutral-400 max-w-xs">
+            Trace results will render here as an interactive graph. Each hop is color-coded by risk.
+          </p>
+        </div>
+
+        <!-- Error state -->
+        <div id="error-state" class="hidden absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-8">
+          <p id="error-text" class="text-[13.5px] text-red-600 max-w-sm"></p>
+        </div>
+
+        <!-- Canvas controls -->
+        <div class="absolute top-3 right-3 flex gap-1">
+          <button id="fit-btn" title="Fit to screen" class="hidden w-8 h-8 rounded-md border border-line bg-white/90 backdrop-blur text-neutral-500 hover:text-neutral-900 hover:border-neutral-300 text-[13px] flex items-center justify-center">⤢</button>
+          <button id="fullscreen-btn" title="Toggle full-screen" class="hidden w-8 h-8 rounded-md border border-line bg-white/90 backdrop-blur text-neutral-500 hover:text-neutral-900 hover:border-neutral-300 text-[13px] flex items-center justify-center">⛶</button>
+        </div>
+
+        <!-- Legend -->
+        <div id="legend" class="hidden absolute bottom-3 left-3 bg-white/95 backdrop-blur border border-line rounded-md px-3 py-2.5 text-[11.5px]">
+          <div class="text-neutral-400 mb-1.5">Risk level</div>
+          <div class="flex items-center gap-3 flex-wrap max-w-[260px]">
+            <span class="flex items-center gap-1.5"><i class="inline-block w-2.5 h-2.5 rounded-full" style="background:#2F9E44"></i>Low</span>
+            <span class="flex items-center gap-1.5"><i class="inline-block w-2.5 h-2.5 rounded-full" style="background:#DFAB01"></i>Medium</span>
+            <span class="flex items-center gap-1.5"><i class="inline-block w-2.5 h-2.5 rounded-full" style="background:#D9730D"></i>High</span>
+            <span class="flex items-center gap-1.5"><i class="inline-block w-2.5 h-2.5 rounded-full" style="background:#E03E3E"></i>Critical</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Side panel -->
+      <aside class="border border-line rounded-lg p-4 flex flex-col" style="height: 560px;">
+        <div id="panel-empty" class="flex-1 flex items-center justify-center text-center">
+          <p class="text-[13px] text-neutral-400 px-4">Select a node to inspect its address, risk score, and flagged heuristics.</p>
+        </div>
+
+        <div id="panel-content" class="hidden flex-col gap-4 overflow-y-auto">
+          <div>
+            <div class="text-[11px] text-neutral-400 mb-1">Address</div>
+            <div id="panel-address" class="text-[12.5px] mono break-all leading-snug"></div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <span id="panel-type" class="text-[11px] px-2 py-0.5 rounded border border-line text-neutral-600"></span>
+            <span id="panel-start" class="hidden text-[11px] px-2 py-0.5 rounded bg-neutral-900 text-white">Seed wallet</span>
+          </div>
+
+          <div class="border-t border-line pt-4">
+            <div class="text-[11px] text-neutral-400 mb-1.5">Risk score</div>
+            <div class="flex items-baseline gap-2">
+              <span id="panel-score" class="text-[26px] font-semibold leading-none"></span>
+              <span class="text-[13px] text-neutral-400">/ 10</span>
+            </div>
+            <span id="panel-level" class="inline-block mt-2 text-[11px] px-2 py-0.5 rounded-full font-medium"></span>
+          </div>
+
+          <div class="border-t border-line pt-4">
+            <div class="text-[11px] text-neutral-400 mb-1.5">Heuristic flags</div>
+            <div id="panel-flags" class="flex flex-wrap gap-1.5"></div>
+          </div>
+
+          <div class="border-t border-line pt-4">
+            <div class="text-[11px] text-neutral-400 mb-1.5">Hop depth</div>
+            <div id="panel-depth" class="text-[13px] mono"></div>
+          </div>
+
+          <div class="border-t border-line pt-4">
+            <div class="text-[11px] text-neutral-400 mb-1.5">Recent outgoing transactions</div>
+            <div id="panel-tx-history" class="flex flex-col gap-2"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Summary strip -->
+    <div id="summary-strip" class="hidden mt-5 flex items-center gap-6 text-[12.5px] text-neutral-500 border-t border-line pt-4">
+      <span><span id="summary-nodes" class="text-ink font-medium"></span> wallets traced</span>
+      <span><span id="summary-edges" class="text-ink font-medium"></span> transactions</span>
+      <span><span id="summary-flagged" class="text-ink font-medium"></span> flagged high/critical</span>
+    </div>
+  </main>
+
+  <script>
+    const form = document.getElementById('trace-form');
+    const input = document.getElementById('address-input');
+    const victimNameInput = document.getElementById('victim-name-input');
+    const traceBtn = document.getElementById('trace-btn');
+    const traceLabel = document.getElementById('trace-btn-label');
+    const spinner = document.getElementById('trace-spinner');
+    const statusLine = document.getElementById('status-line');
+
+    const emptyState = document.getElementById('empty-state');
+    const errorState = document.getElementById('error-state');
+    const errorText = document.getElementById('error-text');
+    const legend = document.getElementById('legend');
+    const fitBtn = document.getElementById('fit-btn');
+    const fullscreenBtn = document.getElementById('fullscreen-btn');
+    const graphPanel = document.getElementById('graph-panel');
+
+    const panelEmpty = document.getElementById('panel-empty');
+    const panelContent = document.getElementById('panel-content');
+    const summaryStrip = document.getElementById('summary-strip');
+
+    const RISK_COLORS = {
+      LOW: '#2F9E44',
+      MEDIUM: '#DFAB01',
+      HIGH: '#D9730D',
+      CRITICAL: '#E03E3E',
+    };
+
+    const TYPE_LABELS = {
+      Wallet: 'Wallet',
+      Exchange: 'Exchange (VASP)',
+      Mixer: 'Mixer / Tumbler',
+      'High-Degree Hub': 'High-degree hub',
+    };
+
+    let cy = null;
+    let lastTraceData = null; // most recent /api/trace response, used for TX history lookups
+
+    function setLoading(isLoading) {
+      traceBtn.disabled = isLoading;
+      traceLabel.textContent = isLoading ? 'Tracing…' : 'Trace';
+      spinner.classList.toggle('hidden', !isLoading);
+    }
+
+    function showEmpty() {
+      emptyState.classList.remove('hidden');
+      errorState.classList.add('hidden');
+      legend.classList.add('hidden');
+      fitBtn.classList.add('hidden');
+      fullscreenBtn.classList.add('hidden');
+      summaryStrip.classList.add('hidden');
+    }
+
+    function showError(message) {
+      emptyState.classList.add('hidden');
+      errorState.classList.remove('hidden');
+      errorText.textContent = message;
+      legend.classList.add('hidden');
+      fitBtn.classList.add('hidden');
+      fullscreenBtn.classList.add('hidden');
+      summaryStrip.classList.add('hidden');
+    }
+
+    function showGraph() {
+      emptyState.classList.add('hidden');
+      errorState.classList.add('hidden');
+      legend.classList.remove('hidden');
+      fitBtn.classList.remove('hidden');
+      fullscreenBtn.classList.remove('hidden');
+    }
+
+    function truncate(addr) {
+      return addr.length > 14 ? addr.slice(0, 8) + '…' + addr.slice(-6) : addr;
+    }
+
+    function nodeShape(type) {
+      switch (type) {
+        case 'Exchange': return 'round-rectangle';
+        case 'Mixer': return 'triangle';
+        case 'High-Degree Hub': return 'hexagon';
+        default: return 'ellipse';
+      }
+    }
+
+    async function runTrace(address, victimName) {
+      setLoading(true);
+      statusLine.textContent = '';
+      showEmpty();
+
+      try {
+        const res = await fetch('/api/trace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            address,
+            victim_name: victimName,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.detail || `Request failed (${res.status})`);
+        }
+
+        renderGraph(data);
+        statusLine.textContent = `Traced ${data.node_count} wallet${data.node_count === 1 ? '' : 's'} across ${data.edge_count} transaction${data.edge_count === 1 ? '' : 's'}.`;
+      } catch (err) {
+        showError(err.message || 'Something went wrong while tracing this address.');
+        statusLine.textContent = '';
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function renderGraph(data) {
+      lastTraceData = data;
+      const elements = [];
+
+      data.nodes.forEach((n) => {
+        elements.push({
+          data: {
+            id: n.id,
+            label: truncate(n.id),
+            type: n.type,
+            depth: n.depth,
+            is_start: n.is_start,
+            risk_score: n.risk_score,
+            risk_level: n.risk_level,
+            flags: n.flags,
+            color: RISK_COLORS[n.risk_level] || RISK_COLORS.LOW,
+          },
+        });
+      });
+
+      data.edges.forEach((e, i) => {
+        elements.push({
+          data: {
+            id: `e${i}`,
+            source: e.source,
+            target: e.target,
+            tx_hash: e.tx_hash,
+            value: e.value,
+            timestamp: e.timestamp,
+            label: typeof e.value === 'number' ? e.value.toFixed(3) + ' ETH' : '',
+          },
+        });
+      });
+
+      if (cy) cy.destroy();
+
+      cy = cytoscape({
+        container: document.getElementById('cy'),
+        elements,
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'background-color': 'data(color)',
+              shape: (el) => nodeShape(el.data('type')),
+              label: 'data(label)',
+              'font-size': '9px',
+              'font-family': 'IBM Plex Mono, monospace',
+              color: '#57534E',
+              'text-valign': 'bottom',
+              'text-margin-y': 6,
+              width: 30,
+              height: 30,
+              'border-width': 2,
+              'border-color': '#ffffff',
+            },
+          },
+          {
+            selector: 'node[?is_start]',
+            style: {
+              'border-width': 3,
+              'border-color': '#1F1F1E',
+              width: 38,
+              height: 38,
+            },
+          },
+          {
+            selector: 'edge',
+            style: {
+              width: 1.4,
+              'line-color': '#D9D6D0',
+              'target-arrow-color': '#D9D6D0',
+              'target-arrow-shape': 'triangle',
+              'arrow-scale': 0.8,
+              'curve-style': 'bezier',
+              label: 'data(label)',
+              'font-size': '8px',
+              'font-family': 'IBM Plex Mono, monospace',
+              color: '#A8A29E',
+              'text-background-color': '#ffffff',
+              'text-background-opacity': 1,
+              'text-background-padding': '2px',
+            },
+          },
+          {
+            selector: 'node:selected',
+            style: {
+              'border-width': 3,
+              'border-color': '#1F1F1E',
+            },
+          },
+        ],
+        layout: {
+          name: 'breadthfirst',
+          roots: [data.start_address],
+          directed: true,
+          spacingFactor: 1.3,
+          padding: 30,
+        },
+        wheelSensitivity: 0.25,
+      });
+
+      cy.on('tap', 'node', (evt) => showNodePanel(evt.target.data()));
+      cy.on('tap', (evt) => {
+        if (evt.target === cy) hideNodePanel();
+      });
+
+      showGraph();
+      updateSummary(data);
+
+      // Auto-select the seed wallet.
+      const startNode = cy.$id(data.start_address);
+      if (startNode.length) showNodePanel(startNode.data());
+    }
+
+    function updateSummary(data) {
+      const flagged = data.nodes.filter(
+        (n) => n.risk_level === 'HIGH' || n.risk_level === 'CRITICAL'
+      ).length;
+      document.getElementById('summary-nodes').textContent = data.node_count;
+      document.getElementById('summary-edges').textContent = data.edge_count;
+      document.getElementById('summary-flagged').textContent = flagged;
+      summaryStrip.classList.remove('hidden');
+    }
+
+    function showNodePanel(d) {
+      panelEmpty.classList.add('hidden');
+      panelContent.classList.remove('hidden');
+      panelContent.classList.add('flex');
+
+      document.getElementById('panel-address').textContent = d.id;
+      document.getElementById('panel-type').textContent = TYPE_LABELS[d.type] || d.type;
+
+      const startBadge = document.getElementById('panel-start');
+      startBadge.classList.toggle('hidden', !d.is_start);
+
+      document.getElementById('panel-score').textContent = d.risk_score.toFixed(1);
+      document.getElementById('panel-depth').textContent = `Hop ${d.depth}`;
+
+      const levelEl = document.getElementById('panel-level');
+      levelEl.textContent = d.risk_level;
+      const color = RISK_COLORS[d.risk_level] || RISK_COLORS.LOW;
+      levelEl.style.backgroundColor = color + '1A';
+      levelEl.style.color = color;
+
+      const flagsEl = document.getElementById('panel-flags');
+      flagsEl.innerHTML = '';
+      if (d.flags && d.flags.length) {
+        d.flags.forEach((f) => {
+          const chip = document.createElement('span');
+          chip.className = 'text-[11px] px-2 py-0.5 rounded border border-line text-neutral-600 mono';
+          chip.textContent = f.replace(/_/g, ' ');
+          flagsEl.appendChild(chip);
+        });
+      } else {
+        flagsEl.innerHTML = '<span class="text-[12.5px] text-neutral-400">None</span>';
+      }
+
+      renderTxHistory(d.id);
+    }
+
+    function formatTimestamp(ts) {
+      if (!ts) return 'Unknown time';
+      const d = new Date(ts * 1000);
+      return d.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit',
+      });
+    }
+
+    function renderTxHistory(nodeId) {
+      const historyEl = document.getElementById('panel-tx-history');
+      historyEl.innerHTML = '';
+
+      if (!lastTraceData) return;
+
+      // Up to the last 5 outgoing transactions from this node, most recent first.
+      const outgoing = lastTraceData.edges
+        .filter((e) => e.source === nodeId)
+        .slice()
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+        .slice(0, 5);
+
+      if (!outgoing.length) {
+        historyEl.innerHTML = '<span class="text-[12.5px] text-neutral-400">No outgoing transactions traced.</span>';
+        return;
+      }
+
+      outgoing.forEach((tx) => {
+        const row = document.createElement('div');
+        row.className = 'border border-line rounded-md px-2.5 py-2 text-[11px] leading-snug';
+        row.innerHTML = `
+          <div class="flex justify-between gap-2">
+            <span class="text-neutral-400">To</span>
+            <span class="mono">${truncate(tx.target)}</span>
+          </div>
+          <div class="flex justify-between gap-2 mt-0.5">
+            <span class="text-neutral-400">TX</span>
+            <span class="mono">${tx.tx_hash ? truncate(tx.tx_hash) : 'N/A'}</span>
+          </div>
+          <div class="flex justify-between gap-2 mt-0.5">
+            <span class="text-neutral-400">When</span>
+            <span>${formatTimestamp(tx.timestamp)}</span>
+          </div>
+        `;
+        historyEl.appendChild(row);
+      });
+    }
+
+    function hideNodePanel() {
+      panelEmpty.classList.remove('hidden');
+      panelContent.classList.add('hidden');
+      panelContent.classList.remove('flex');
+    }
+
+    fitBtn.addEventListener('click', () => {
+      if (cy) cy.fit(undefined, 40);
+    });
+
+    let isFullscreen = false;
+
+    // Classes toggled to expand #graph-panel to fill the viewport. 'relative'
+    // is swapped out for 'fixed' (rather than left in place) because both
+    // utilities set the CSS `position` property - leaving 'relative' active
+    // alongside 'fixed' risks the wrong one winning the cascade and quietly
+    // breaking the full-screen layout. 'fixed' still establishes a
+    // containing block, so the absolutely-positioned children (empty/error
+    // states, canvas controls, legend) keep working correctly either way.
+    const FULLSCREEN_CLASSES = ['fixed', 'inset-0', 'z-50', 'w-screen', 'h-screen', 'rounded-none'];
+
+    function setFullscreen(on) {
+      isFullscreen = on;
+      if (on) {
+        graphPanel.classList.remove('relative', 'rounded-lg');
+        graphPanel.classList.add(...FULLSCREEN_CLASSES);
+        graphPanel.style.height = '';
+        document.body.style.overflow = 'hidden';
+        fullscreenBtn.textContent = '✕';
+        fullscreenBtn.title = 'Exit full-screen';
+      } else {
+        graphPanel.classList.remove(...FULLSCREEN_CLASSES);
+        graphPanel.classList.add('relative', 'rounded-lg');
+        graphPanel.style.height = '560px';
+        document.body.style.overflow = '';
+        fullscreenBtn.textContent = '⛶';
+        fullscreenBtn.title = 'Toggle full-screen';
+      }
+      // Let the layout settle before telling Cytoscape to recalculate its
+      // canvas size, otherwise it keeps rendering at the old dimensions.
+      requestAnimationFrame(() => {
+        if (cy) {
+          cy.resize();
+          cy.fit(undefined, 40);
+        }
+      });
+    }
+
+    fullscreenBtn.addEventListener('click', () => setFullscreen(!isFullscreen));
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && isFullscreen) setFullscreen(false);
+    });
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const address = input.value.trim();
+      const victimName = victimNameInput.value.trim();
+
+      if (!victimName) {
+        statusLine.textContent = 'Victim name is required for the chain-of-custody record.';
+        victimNameInput.focus();
+        return;
+      }
+      if (!address) {
+        statusLine.textContent = 'Victim wallet address is required to start the trace.';
+        input.focus();
+        return;
+      }
+
+      runTrace(address, victimName);
+    });
+  </script>
+</body>
+</html>
