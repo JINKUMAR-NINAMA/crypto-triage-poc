@@ -1,0 +1,20 @@
+# API Keys & Secrets
+.env
+
+# Python & Virtual Environment
+__pycache__/
+*.py[cod]
+venv/
+
+# PyInstaller Build Files
+build/
+dist/
+*.spec
+
+# Generated Output & Temporary Files
+CryptoTriage_Release/
+case_reports/
+Archive/
+audit_ledger.txt
+project_files*.txt
+finalworkflow.pdf
